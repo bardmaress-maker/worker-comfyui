@@ -1,52 +1,108 @@
-# Iron Vale / Adrian Valen recap pipeline -- custom build living inside this
-# fork of runpod-workers/worker-comfyui, kept deliberately separate from the
-# upstream Dockerfile/docker-bake.hcl/dev.yml/release.yml (all untouched) so
-# `git fetch upstream && git merge upstream/main` stays low-conflict.
+# Iron Vale / Adrian Valen recap pipeline -- custom build inside this fork of
+# runpod-workers/worker-comfyui. Upstream's own Dockerfile, docker-bake.hcl,
+# dev.yml and release.yml are left untouched so `git fetch upstream &&
+# git merge upstream/main` stays low-conflict.
 #
 # Builds FROM the published `runpod/worker-comfyui:*-base` tag rather than
 # upstream's own "base" build stage: that stage compiles CUDA/torch/ComfyUI
-# from scratch, which is multi-GB and slow on a standard GitHub-hosted
-# runner (~14GB disk). The published base tag is already built; this file
-# only layers our custom nodes and reference images on top of it.
+# from scratch (multi-GB, slow, and upstream needs a beefier-than-standard
+# runner for it). The published tag is already built, so this file only
+# layers our custom nodes and reference images on top.
 FROM runpod/worker-comfyui:5.8.6-base
 
 # ---------------------------------------------------------------------------
 # Custom nodes
 # ---------------------------------------------------------------------------
-# Registry (CNR) nodes -- installed by registry package name via the base
-# image's comfy-node-install wrapper. Versions match what was verified
-# working in the source ComfyUI Manager snapshot (2026-08-19); comfy-node-install
-# always takes the latest release per package rather than an exact pinned
-# version -- if a specific one ever needs pinning, use the git-clone-and-checkout
-# form below (see ComfyUI-RunpodDirect) instead.
+# Derived from snapshots/2026-08-19_20-39-45_snapshot.json (the verbatim
+# ComfyUI Manager export from the working pod, committed for provenance).
+#
+# We do NOT run `comfy node restore-snapshot` on it, because every commit hash
+# in that file was checked against its public repo on 2026-08-19 and most are
+# gone (force-pushed / rebased history, or RunPod-modified forks):
+#
+#   yolain/ComfyUI-Easy-Use        @ 54d080bf6a  -> EXISTS
+#   kijai/ComfyUI-KJNodes          @ d19ce9078f  -> GONE
+#   MadiatorLabs/ComfyUI-RunpodDirect @ 67999ba4a6 -> GONE
+#   ltdrdata/ComfyUI-Manager       @ b2a9dec9b1  -> GONE
+#   ComfyUI core                   @ 35903cbdfa  -> GONE (not in comfyanonymous/ComfyUI)
+#
+# restore-snapshot hard-fails on a dead hash, so it is not a usable mechanism
+# here -- an earlier build of this exact image already failed that way on the
+# RunpodDirect checkout (exit 128). Explicit installs below instead, pinning
+# only what actually verifies. See docs/iron-vale/custom-nodes.md.
+
+# Registry (CNR) nodes. comfy-node-install always takes the latest release per
+# package -- the registry has no exact-version install path -- which is fine
+# here since the snapshot's own pins for these are version strings, not
+# reproducible commits.
 RUN comfy-node-install \
     comfyui-easy-use \
+    comfyui-kjnodes \
     comfyui-multigpu \
     comfyui_essentials \
     comfyui-custom-scripts \
     rgthree-comfy \
-    sigmas_tools_and_the_golden_scheduler \
-    comfyui-kjnodes
+    sigmas_tools_and_the_golden_scheduler
 
-# ComfyUI-RunpodDirect -- not on the Comfy Registry, installed straight from
-# its git source and pinned to the exact commit from the source snapshot for
-# reproducibility.
-RUN cd /comfyui/custom_nodes \
-    && git clone https://github.com/MadiatorLabs/ComfyUI-RunpodDirect.git \
-    && cd ComfyUI-RunpodDirect \
-    && git checkout 67999ba4a64462641213bc3e90a2f5eba52c22ae \
-    && if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+# ComfyUI-Easy-Use, re-pinned to the snapshot's exact commit. This is the one
+# hash that still resolves, AND the only custom node our production workflow
+# genuinely depends on: it provides `easy cleanGpuUsed` (node 65). Every other
+# class in panel_reference_edit_workflow.json was verified to be core ComfyUI
+# (CFGNorm, ModelSamplingAuraFlow, FluxKontextMultiReferenceLatentMethod,
+# TextEncodeQwenImageEditPlus, ImageScaleToTotalPixels, EmptySD3LatentImage,
+# KSampler, VAE/CLIP/UNET loaders, LoadImage, SaveImage, VAEEncode/Decode).
+# Pinning it keeps the one dependency that can actually break us reproducible;
+# the CNR install above is what puts it on disk, this just fixes the revision.
+RUN cd /comfyui/custom_nodes/ComfyUI-Easy-Use \
+    && git fetch --depth=1 origin 54d080bf6a4f52da287e984f305243c10db097f5 \
+    && git checkout 54d080bf6a4f52da287e984f305243c10db097f5
 
-# NOT included, on purpose -- see docs/iron-vale/custom-nodes.md for the
-# reasoning:
-#   - ComfyUI-Manager: already present in the base image.
-#   - Civicomfy (CivitAI browser/downloader UI helper): interactive-only,
-#     nothing in our workflow calls it, dead weight on a headless worker.
+# NOT installed, deliberately -- see docs/iron-vale/custom-nodes.md:
+#   - ComfyUI-Manager: already in the base image.
+#   - Civicomfy: interactive CivitAI browser UI, useless headless.
+#   - ComfyUI-RunpodDirect: pod-convenience node for the RunPod pod UI. Its
+#     pinned commit is gone, nothing in our workflow references it, and it has
+#     no role on a serverless worker. This is what broke the first build.
+
+# Install every custom node's own requirements.txt. A node missing its Python
+# deps fails at ComfyUI import time, which surfaces on a live worker as the
+# misleading "ComfyUI server not reachable" error rather than anything
+# pointing at the real cause.
+RUN for r in /comfyui/custom_nodes/*/requirements.txt; do \
+      [ -f "$r" ] && echo "installing $r" && uv pip install -r "$r" || true; \
+    done
+
+# The snapshot's ~260-entry "pips" block is deliberately NOT restored: it is
+# the whole interactive pod environment (jupyterlab, notebook, ipykernel,
+# debugpy, matplotlib...), irrelevant to a headless worker, and force-
+# installing it risks stomping the torch/transformers versions the base image
+# pins on purpose. Per-node requirements above cover what's actually needed.
+
+# Build-time smoke test: boot ComfyUI on CPU so a node that breaks the import
+# graph is caught HERE instead of on a live GPU worker. Mirrors what upstream's
+# own Dockerfile does after its dependency install.
+RUN cd /comfyui && timeout 600 python main.py --quick-test-for-ci --cpu
+
+# ---------------------------------------------------------------------------
+# Model path resolution
+# ---------------------------------------------------------------------------
+# Overrides the base image's extra_model_paths.yaml. The stock one maps only
+# the legacy `unet:` and `clip:` keys, but current ComfyUI registers those
+# folders under `diffusion_models` and `text_encoders` -- so UNETLoader /
+# CLIPLoader can fail to see network-volume models despite the files being in
+# the right place. Ours declares both spellings. See docs/iron-vale/models.md.
+COPY extra_model_paths.iron-vale.yaml /comfyui/extra_model_paths.yaml
+
+# Snapshot kept inside the image too, so a running worker can be compared
+# against the environment it was derived from.
+COPY snapshots/ /snapshots/
 
 # ---------------------------------------------------------------------------
 # Static reference images
 # ---------------------------------------------------------------------------
-# Character and location reference PNGs the workflow's LoadImage nodes pull
-# by filename. Small (~23 MB total) and effectively static, so baking them
-# in makes every request self-contained -- see docs/iron-vale/workflow.md.
+# Character and location reference PNGs the workflow's LoadImage nodes pull by
+# filename (~23 MB total, effectively static). Baking them in makes every
+# request self-contained -- no upload-then-generate round trip. Anything that
+# genuinely varies per request should instead go in the request's "images"
+# array as base64 (see upstream test_input.json).
 COPY input/ /comfyui/input/

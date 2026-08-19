@@ -1,0 +1,33 @@
+# Model path resolution for the Iron Vale worker. Replaces the base image's
+# src/extra_model_paths.yaml (see Dockerfile.iron-vale).
+#
+# WHY THIS EXISTS: the stock file declares only the legacy `unet:` and `clip:`
+# keys. Current ComfyUI registers those model folders internally as
+# `diffusion_models` (dirs: models/unet + models/diffusion_models) and
+# `text_encoders` (dirs: models/text_encoders + models/clip). An
+# extra_model_paths key only takes effect if it matches a registered folder
+# name, so with the stock file a UNETLoader/CLIPLoader can fail to see models
+# on the network volume even though the files are in the documented location.
+# Declaring BOTH spellings makes it work regardless of which name the running
+# ComfyUI version registers.
+runpod_worker_comfy:
+  base_path: /runpod-volume
+
+  # Our workflow's three loaders:
+  #   UNETLoader  -> Qwen-Rapid-AIO-SFW-v23.safetensors
+  #   VAELoader   -> qwen_image_vae.safetensors
+  #   CLIPLoader  -> qwen_2.5_vl_7b_fp8_scaled.safetensors
+  unet: models/unet/
+  diffusion_models: models/unet/
+  clip: models/clip/
+  text_encoders: models/clip/
+  vae: models/vae/
+
+  # Carried over from the stock file so nothing else regresses.
+  checkpoints: models/checkpoints/
+  clip_vision: models/clip_vision/
+  configs: models/configs/
+  controlnet: models/controlnet/
+  embeddings: models/embeddings/
+  loras: models/loras/
+  upscale_models: models/upscale_models/
