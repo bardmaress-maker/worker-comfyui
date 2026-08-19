@@ -1,0 +1,206 @@
+{
+  "40": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "model": [
+        "41",
+        0
+      ],
+      "strength": 1,
+      "pre_cfg": false
+    }
+  },
+  "41": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "70",
+        0
+      ],
+      "shift": 3.1
+    }
+  },
+  "44": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "conditioning": [
+        "53",
+        0
+      ],
+      "reference_latents_method": "index_timestep_zero"
+    }
+  },
+  "36": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "34",
+        0
+      ],
+      "filename_prefix": "ComfyUI"
+    }
+  },
+  "43": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "inputs": {
+      "conditioning": [
+        "48",
+        0
+      ],
+      "reference_latents_method": "index_timestep_zero"
+    }
+  },
+  "53": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": [
+        "69",
+        0
+      ],
+      "vae": [
+        "37",
+        0
+      ],
+      "prompt": ""
+    }
+  },
+  "47": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "ComfyUI_00318_.png"
+    }
+  },
+  "34": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "65",
+        0
+      ],
+      "vae": [
+        "37",
+        0
+      ]
+    }
+  },
+  "35": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "jimeng-2025-12-24-4333.png"
+    }
+  },
+  "42": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "40",
+        0
+      ],
+      "positive": [
+        "43",
+        0
+      ],
+      "negative": [
+        "44",
+        0
+      ],
+      "latent_image": [
+        "52",
+        0
+      ],
+      "seed": 360074427920745,
+      "steps": 6,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1
+    }
+  },
+  "49": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 1280,
+      "height": 1280,
+      "batch_size": 1
+    }
+  },
+  "52": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "39",
+        0
+      ],
+      "vae": [
+        "37",
+        0
+      ]
+    }
+  },
+  "65": {
+    "class_type": "easy cleanGpuUsed",
+    "inputs": {
+      "anything": [
+        "42",
+        0
+      ]
+    }
+  },
+  "39": {
+    "class_type": "ImageScaleToTotalPixels",
+    "inputs": {
+      "image": [
+        "46",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1
+    }
+  },
+  "37": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "69": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    }
+  },
+  "48": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": [
+        "69",
+        0
+      ],
+      "vae": [
+        "37",
+        0
+      ],
+      "image1": [
+        "39",
+        0
+      ],
+      "prompt": "regenerate the reference image in another position"
+    }
+  },
+  "46": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "Screenshot 2026-07-25 202000.png"
+    }
+  },
+  "70": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "Qwen-Rapid-AIO-SFW-v23.safetensors",
+      "weight_dtype": "default"
+    }
+  }
+}

@@ -1,0 +1,52 @@
+# Iron Vale / Adrian Valen recap pipeline -- custom build living inside this
+# fork of runpod-workers/worker-comfyui, kept deliberately separate from the
+# upstream Dockerfile/docker-bake.hcl/dev.yml/release.yml (all untouched) so
+# `git fetch upstream && git merge upstream/main` stays low-conflict.
+#
+# Builds FROM the published `runpod/worker-comfyui:*-base` tag rather than
+# upstream's own "base" build stage: that stage compiles CUDA/torch/ComfyUI
+# from scratch, which is multi-GB and slow on a standard GitHub-hosted
+# runner (~14GB disk). The published base tag is already built; this file
+# only layers our custom nodes and reference images on top of it.
+FROM runpod/worker-comfyui:5.8.6-base
+
+# ---------------------------------------------------------------------------
+# Custom nodes
+# ---------------------------------------------------------------------------
+# Registry (CNR) nodes -- installed by registry package name via the base
+# image's comfy-node-install wrapper. Versions match what was verified
+# working in the source ComfyUI Manager snapshot (2026-08-19); comfy-node-install
+# always takes the latest release per package rather than an exact pinned
+# version -- if a specific one ever needs pinning, use the git-clone-and-checkout
+# form below (see ComfyUI-RunpodDirect) instead.
+RUN comfy-node-install \
+    comfyui-easy-use \
+    comfyui-multigpu \
+    comfyui_essentials \
+    comfyui-custom-scripts \
+    rgthree-comfy \
+    sigmas_tools_and_the_golden_scheduler \
+    comfyui-kjnodes
+
+# ComfyUI-RunpodDirect -- not on the Comfy Registry, installed straight from
+# its git source and pinned to the exact commit from the source snapshot for
+# reproducibility.
+RUN cd /comfyui/custom_nodes \
+    && git clone https://github.com/MadiatorLabs/ComfyUI-RunpodDirect.git \
+    && cd ComfyUI-RunpodDirect \
+    && git checkout 67999ba4a64462641213bc3e90a2f5eba52c22ae \
+    && if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+
+# NOT included, on purpose -- see docs/iron-vale/custom-nodes.md for the
+# reasoning:
+#   - ComfyUI-Manager: already present in the base image.
+#   - Civicomfy (CivitAI browser/downloader UI helper): interactive-only,
+#     nothing in our workflow calls it, dead weight on a headless worker.
+
+# ---------------------------------------------------------------------------
+# Static reference images
+# ---------------------------------------------------------------------------
+# Character and location reference PNGs the workflow's LoadImage nodes pull
+# by filename. Small (~23 MB total) and effectively static, so baking them
+# in makes every request self-contained -- see docs/iron-vale/workflow.md.
+COPY input/ /comfyui/input/
