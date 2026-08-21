@@ -46,6 +46,56 @@ def fetch_object_info(comfy_url: str) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+# Slot types for the node classes this project uses. ComfyUI/litegraph uses
+# slot types to validate and colour links, and names them by type (MODEL,
+# LATENT, ...) rather than positionally -- emitting a bare "*" for everything
+# produces a file that loads wrong and then exports broken API JSON, so the
+# types have to be real.
+#
+# Only consulted when /object_info isn't available; with --comfy-url the live
+# server's schema wins. Values are (input_name -> type, [output types]) and
+# come from ComfyUI core source. Unknown classes degrade to "*", which is also
+# the genuinely correct type for a passthrough node like `easy cleanGpuUsed`.
+KNOWN_TYPES = {
+    "UNETLoader":                          ({}, ["MODEL"]),
+    "VAELoader":                           ({}, ["VAE"]),
+    "CLIPLoader":                          ({}, ["CLIP"]),
+    "CheckpointLoaderSimple":              ({}, ["MODEL", "CLIP", "VAE"]),
+    "LoadImage":                           ({}, ["IMAGE", "MASK"]),
+    "EmptySD3LatentImage":                 ({}, ["LATENT"]),
+    "ModelSamplingAuraFlow":               ({"model": "MODEL"}, ["MODEL"]),
+    "CFGNorm":                             ({"model": "MODEL"}, ["MODEL"]),
+    "ImageScaleToTotalPixels":             ({"image": "IMAGE"}, ["IMAGE"]),
+    "VAEEncode":                           ({"pixels": "IMAGE", "vae": "VAE"}, ["LATENT"]),
+    "VAEDecode":                           ({"samples": "LATENT", "vae": "VAE"}, ["IMAGE"]),
+    "SaveImage":                           ({"images": "IMAGE"}, []),
+    "PreviewImage":                        ({"images": "IMAGE"}, []),
+    "KSampler":                            ({"model": "MODEL", "positive": "CONDITIONING",
+                                             "negative": "CONDITIONING", "latent_image": "LATENT"}, ["LATENT"]),
+    "TextEncodeQwenImageEditPlus":         ({"clip": "CLIP", "vae": "VAE", "image1": "IMAGE",
+                                             "image2": "IMAGE", "image3": "IMAGE"}, ["CONDITIONING"]),
+    "FluxKontextMultiReferenceLatentMethod": ({"conditioning": "CONDITIONING"}, ["CONDITIONING"]),
+    "LoraLoaderModelOnly":                 ({"model": "MODEL"}, ["MODEL"]),
+    "easy cleanGpuUsed":                   ({"anything": "*"}, ["*"]),
+}
+
+
+def _schema_types(class_type: str, object_info: dict):
+    """(input_name -> type, [output types]) for a class, preferring the live
+    server schema and falling back to KNOWN_TYPES."""
+    info = (object_info or {}).get(class_type)
+    if info:
+        in_types = {}
+        input_def = info.get("input", {})
+        for section in ("required", "optional"):
+            for name, spec in (input_def.get(section) or {}).items():
+                t = spec[0] if isinstance(spec, list) and spec else spec
+                # A literal list of options is a COMBO widget, not a link slot.
+                in_types[name] = "*" if isinstance(t, list) else t
+        return in_types, list(info.get("output", []) or [])
+    return KNOWN_TYPES.get(class_type, ({}, []))
+
+
 def _is_link(value) -> bool:
     """API-format inputs are either a literal widget value or a link, encoded
     as [source_node_id, output_slot]."""
@@ -82,20 +132,36 @@ def convert_api_to_ui(api: dict, object_info: dict) -> dict:
     node_ids = sorted(api.keys(), key=lambda x: int(x) if str(x).isdigit() else 0)
     index_of = {nid: i for i, nid in enumerate(node_ids)}
 
-    nodes = []
     links = []
     next_link_id = 1
-    # (target_node_id, input_name) -> link id, built as we walk inputs
-    outputs_needed = {}  # source_node_id -> max slot index referenced
+    outputs_needed = {}      # source_node_id -> highest output slot referenced
+    inputs_by_node = {}      # target_node_id -> [ui input dicts]
 
-    # First pass: discover how many output slots each node actually needs, so
-    # a node feeding two different consumers still declares both slots.
-    for nid, node in api.items():
-        for value in (node.get("inputs") or {}).values():
-            if _is_link(value):
-                src, slot = str(value[0]), value[1]
-                outputs_needed[src] = max(outputs_needed.get(src, 0), slot)
+    # Pass 1: build every link. This has to complete before any node's outputs
+    # are assembled -- an output slot lists the ids of links leaving it, and
+    # those links are discovered while walking the *consumer* nodes' inputs.
+    # Doing both in one loop leaves every node whose consumer sorts later with
+    # a silently empty output slot.
+    for nid in node_ids:
+        class_type = api[nid].get("class_type")
+        in_types, _ = _schema_types(class_type, object_info)
+        ui_inputs = []
+        for name, value in (api[nid].get("inputs") or {}).items():
+            if not _is_link(value):
+                continue
+            src_id, src_slot = str(value[0]), value[1]
+            slot_type = in_types.get(name, "*")
+            link_id = next_link_id
+            next_link_id += 1
+            # UI link record: [id, origin_node, origin_slot, target_node,
+            # target_slot, type]
+            links.append([link_id, int(src_id), src_slot, int(nid), len(ui_inputs), slot_type])
+            ui_inputs.append({"name": name, "type": slot_type, "link": link_id})
+            outputs_needed[src_id] = max(outputs_needed.get(src_id, 0), src_slot)
+        inputs_by_node[nid] = ui_inputs
 
+    # Pass 2: assemble nodes, now that `links` is complete.
+    nodes = []
     for nid in node_ids:
         node = api[nid]
         class_type = node.get("class_type")
@@ -103,23 +169,22 @@ def convert_api_to_ui(api: dict, object_info: dict) -> dict:
         i = index_of[nid]
         pos = [(i // NODES_PER_COL) * COL_WIDTH, (i % NODES_PER_COL) * ROW_HEIGHT]
 
-        ui_inputs = []
-        for name, value in inputs.items():
-            if not _is_link(value):
-                continue
-            src_id, src_slot = str(value[0]), value[1]
-            link_id = next_link_id
-            next_link_id += 1
-            # UI link record: [id, origin_node, origin_slot, target_node,
-            # target_slot, type]
-            links.append([link_id, int(src_id), src_slot, int(nid), len(ui_inputs), "*"])
-            ui_inputs.append({"name": name, "type": "*", "link": link_id})
+        _, out_types = _schema_types(class_type, object_info)
 
-        n_out = outputs_needed.get(nid, -1) + 1
+        # Declare at least as many output slots as something actually consumes,
+        # even if the schema lists fewer (custom node version drift).
+        n_out = max(len(out_types), outputs_needed.get(nid, -1) + 1)
         ui_outputs = []
         for slot in range(n_out):
             slot_links = [l[0] for l in links if l[1] == int(nid) and l[2] == slot]
-            ui_outputs.append({"name": f"OUT{slot}", "type": "*", "links": slot_links, "slot_index": slot})
+            # ComfyUI names an output slot after its type (MODEL, LATENT, ...).
+            slot_type = out_types[slot] if slot < len(out_types) else "*"
+            ui_outputs.append({
+                "name": slot_type,
+                "type": slot_type,
+                "links": slot_links,
+                "slot_index": slot,
+            })
 
         widgets_values = [inputs[n] for n in _widget_order(class_type, inputs, object_info)]
 
@@ -131,7 +196,7 @@ def convert_api_to_ui(api: dict, object_info: dict) -> dict:
             "flags": {},
             "order": i,
             "mode": 0,
-            "inputs": ui_inputs,
+            "inputs": inputs_by_node[nid],
             "outputs": ui_outputs,
             "properties": {"Node name for S&R": class_type},
             "widgets_values": widgets_values,

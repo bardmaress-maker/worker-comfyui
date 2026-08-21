@@ -36,7 +36,6 @@ FROM runpod/worker-comfyui:5.8.6-base
 # here since the snapshot's own pins for these are version strings, not
 # reproducible commits.
 RUN comfy-node-install \
-    comfyui-easy-use \
     comfyui-kjnodes \
     comfyui-multigpu \
     comfyui_essentials \
@@ -44,17 +43,24 @@ RUN comfy-node-install \
     rgthree-comfy \
     sigmas_tools_and_the_golden_scheduler
 
-# ComfyUI-Easy-Use, re-pinned to the snapshot's exact commit. This is the one
-# hash that still resolves, AND the only custom node our production workflow
-# genuinely depends on: it provides `easy cleanGpuUsed` (node 65). Every other
-# class in panel_reference_edit_workflow.json was verified to be core ComfyUI
-# (CFGNorm, ModelSamplingAuraFlow, FluxKontextMultiReferenceLatentMethod,
+# ComfyUI-Easy-Use is installed from git rather than the registry, so the
+# snapshot's exact commit can be checked out. Two reasons the registry route
+# can't pin it (both learned from a failed build):
+#   1. comfy-node-install lays a package down under its REGISTRY name
+#      (custom_nodes/comfyui-easy-use), not the GitHub repo name.
+#   2. A registry install is a package download, not a git working copy --
+#      there is no revision history in it to check out at all.
+#
+# This is the one custom node our production workflow genuinely depends on:
+# it provides `easy cleanGpuUsed` (node 65). Every other class in
+# panel_reference_edit_workflow.json was verified to be core ComfyUI (CFGNorm,
+# ModelSamplingAuraFlow, FluxKontextMultiReferenceLatentMethod,
 # TextEncodeQwenImageEditPlus, ImageScaleToTotalPixels, EmptySD3LatentImage,
 # KSampler, VAE/CLIP/UNET loaders, LoadImage, SaveImage, VAEEncode/Decode).
-# Pinning it keeps the one dependency that can actually break us reproducible;
-# the CNR install above is what puts it on disk, this just fixes the revision.
-RUN cd /comfyui/custom_nodes/ComfyUI-Easy-Use \
-    && git fetch --depth=1 origin 54d080bf6a4f52da287e984f305243c10db097f5 \
+# So it's the one worth keeping reproducible.
+RUN git clone https://github.com/yolain/ComfyUI-Easy-Use.git \
+      /comfyui/custom_nodes/ComfyUI-Easy-Use \
+    && cd /comfyui/custom_nodes/ComfyUI-Easy-Use \
     && git checkout 54d080bf6a4f52da287e984f305243c10db097f5
 
 # NOT installed, deliberately -- see docs/iron-vale/custom-nodes.md:
